@@ -27,6 +27,7 @@
           - xz-utils
           - wget
           - bc
+          - gawk
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
