@@ -3,3 +3,11 @@
 ```bash
 sudo apt install linux-image-generic
 ```
+
+```bash
+apt list --upgradable | grep linux-image
+```
+
+```bash
+apt-cache search linux-image
+```
