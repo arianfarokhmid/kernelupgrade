@@ -1,5 +1,5 @@
 **or just updating from apt package  manager do this:**
 
-bash```
+```bash
 sudo apt install linux-image-generic
 ```
