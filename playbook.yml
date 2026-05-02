@@ -1,0 +1,113 @@
+---
+- name: Build and Install Linux Kernel from Source
+  hosts: all
+  become: yes
+  vars:
+    kernel_version: "7.0.3"
+    major_version: "{{ kernel_version.split('.')[0] }}"
+    kernel_url: "https://cdn.kernel.org/pub/linux/kernel/v{{ major_version }}.x/linux-{{ kernel_version }.tar.xz"
+    kernel_src_dir: "{{ build_dir }}/linux-{{ kernel_version }}"
+    build_dir: "/home/{{ ansible_user_id }}/kernel_build"
+    threads: "{{ ansible_processor_vcpus }}"
+
+  tasks:
+    - name: Install build dependencies (Debian/Ubuntu)
+      apt:
+        name:
+          - build-essential
+          - flex
+          - bison
+          - libncurses-dev
+          - libssl-dev
+          - libelf-dev
+          - libdw-dev
+          - libdwarf-dev
+          - dwarves
+          - pahole
+          - xz-utils
+          - wget
+          - bc
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Create build directory
+      file:
+        path: "{{ build_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download Kernel source tarball
+      get_url:
+        url: "{{ kernel_url }}"
+        dest: "{{ build_dir }}/linux-{{ kernel_version }}.tar.xz"
+        timeout: 300
+
+    - name: Extract Kernel source
+      unarchive:
+        src: "{{ build_dir }}/linux-{{ kernel_version }}.tar.xz"
+        dest: "{{ build_dir }}"
+        remote_src: yes
+        creates: "{{ build_dir }}/linux-{{ kernel_version }}/Makefile"
+
+    - name: Copy current system kernel config
+      copy:
+        src: "/boot/config-{{ ansible_kernel }}"
+        dest: "{{ kernel_src_dir }}/.config"
+        remote_src: yes
+
+    # ------------------------------------------------
+    # FIX: Remove Debian Canonical cert references
+    # ------------------------------------------------
+    
+    - name: Remove Debian Canonical certificate reference
+      replace:
+        path: "{{ kernel_src_dir }}/.config"
+        regexp: 'debian/canonical-certs.pem'
+        replace: ''
+
+    - name: Disable system trusted keys
+      lineinfile:
+        path: "{{ kernel_src_dir }}/.config"
+        regexp: '^CONFIG_SYSTEM_TRUSTED_KEYS='
+        line: 'CONFIG_SYSTEM_TRUSTED_KEYS=""'
+
+    - name: Disable system revocation keys
+      lineinfile:
+        path: "{{ kernel_src_dir }}/.config"
+        regexp: '^CONFIG_SYSTEM_REVOCATION_KEYS='
+        line: 'CONFIG_SYSTEM_REVOCATION_KEYS=""'
+
+    - name: Disable module signature enforcement
+      lineinfile:
+        path: "{{ kernel_src_dir }}/.config"
+        regexp: '^CONFIG_MODULE_SIG='
+        line: 'CONFIG_MODULE_SIG=n'
+
+    - name: Run olddefconfig (Accept defaults for new options)
+      command: make olddefconfig
+      args:
+        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+
+    - name: Build Kernel and Modules (This will take time)
+      command: "make -j{{ threads }}"
+      args:
+        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+      async: 7200 
+      poll: 60    
+
+    - name: Install Kernel Modules
+      command: make modules_install
+      args:
+        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+
+    - name: Install Kernel
+      command: make install
+      args:
+        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+      notify: Update Grub
+
+  handlers:
+    - name: Update Grub
+      command: update-grub
+      when: ansible_os_family == "Debian"
