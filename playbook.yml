@@ -5,15 +5,15 @@
   vars:
     kernel_version: "7.0.3"
     major_version: "{{ kernel_version.split('.')[0] }}"
-    kernel_url: "https://cdn.kernel.org/pub/linux/kernel/v{{ major_version }}.x/linux-{{ kernel_version }.tar.xz"
-    kernel_src_dir: "{{ build_dir }}/linux-{{ kernel_version }}"
+    kernel_url: "https://cdn.kernel.org/pub/linux/kernel/v{{ major_version }}.x/linux-{{ kernel_version }}.tar.xz"
     build_dir: "/home/{{ ansible_user_id }}/kernel_build"
+    kernel_src_dir: "{{ build_dir }}/linux-{{ kernel_version }}"
     threads: "{{ ansible_processor_vcpus }}"
 
   tasks:
     - name: Install build dependencies (Debian/Ubuntu)
       apt:
-        name:
+        pkg:
           - build-essential
           - flex
           - bison
@@ -49,7 +49,7 @@
         src: "{{ build_dir }}/linux-{{ kernel_version }}.tar.xz"
         dest: "{{ build_dir }}"
         remote_src: yes
-        creates: "{{ build_dir }}/linux-{{ kernel_version }}/Makefile"
+        creates: "{{ kernel_src_dir }}/Makefile"
 
     - name: Copy current system kernel config
       copy:
@@ -88,24 +88,87 @@
     - name: Run olddefconfig (Accept defaults for new options)
       command: make olddefconfig
       args:
-        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+        chdir: "{{ kernel_src_dir }}"
 
-    - name: Build Kernel and Modules (This will take time)
+    - name: Build Kernel and Modules (This may take time)
       command: "make -j{{ threads }}"
       args:
-        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+        chdir: "{{ kernel_src_dir }}"
       async: 7200 
       poll: 60    
 
     - name: Install Kernel Modules
       command: make modules_install
       args:
-        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+        chdir: "{{ kernel_src_dir }}"
 
     - name: Install Kernel
       command: make install
       args:
-        chdir: "{{ build_dir }}/linux-{{ kernel_version }}"
+        chdir: "{{ kernel_src_dir }}"
+      notify: Update Grub
+
+    # ------------------------------------------------
+    # Configure initramfs with MODULES=dep and xz compression
+    # ------------------------------------------------
+
+    - name: Backup existing initramfs configuration
+      copy:
+        src: /etc/initramfs-tools/initramfs.conf
+        dest: /etc/initramfs-tools/initramfs.conf.backup
+        remote_src: yes
+
+    - name: Configure initramfs with MODULES=dep
+      lineinfile:
+        path: /etc/initramfs-tools/initramfs.conf
+        regexp: '^MODULES='
+        line: 'MODULES=dep'
+        backup: yes
+
+    - name: Configure initramfs compression to xz
+      lineinfile:
+        path: /etc/initramfs-tools/initramfs.conf
+        regexp: '^COMPRESS='
+        line: 'COMPRESS=xz'
+
+    - name: Ensure NVME modules are included in initramfs
+      lineinfile:
+        path: /etc/initramfs-tools/modules
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - nvme
+        - nvme_core
+        - nvme-pci
+
+    - name: Remove old initramfs for new kernel
+      file:
+        path: "/boot/initrd.img-{{ kernel_version }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Rebuild initramfs with optimized settings
+      command: update-initramfs -c -k {{ kernel_version }}
+      register: initramfs_build
+      failed_when:
+        - initramfs_build.rc != 0
+        - "'No space left on device' not in initramfs_build.stderr"
+
+    - name: Display initramfs size for verification
+      stat:
+        path: "/boot/initrd.img-{{ kernel_version }}"
+      register: initramfs_stat
+
+    - name: Show initramfs size (should be < 100MB for servers)
+      debug:
+        msg:
+          - "Initramfs size: {{ (initramfs_stat.stat.size / 1048576) | round(2) }} MB"
+          - "Expected size with MODULES=dep: 30-80 MB"
+
+    - name: Warn if initramfs is too large
+      debug:
+        msg: "WARNING: Initramfs is {{ (initramfs_stat.stat.size / 1048576) | round(2) }} MB - may cause boot issues!"
+      when: (initramfs_stat.stat.size / 1048576) > 150
       notify: Update Grub
 
   handlers:
