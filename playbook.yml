@@ -79,12 +79,13 @@
         regexp: '^CONFIG_SYSTEM_REVOCATION_KEYS='
         line: 'CONFIG_SYSTEM_REVOCATION_KEYS=""'
 
+
     - name: Disable module signature enforcement
       lineinfile:
         path: "{{ kernel_src_dir }}/.config"
         regexp: '^CONFIG_MODULE_SIG='
         line: 'CONFIG_MODULE_SIG=n'
-
+        
     - name: Run olddefconfig (Accept defaults for new options)
       command: make olddefconfig
       args:
